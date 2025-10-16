@@ -19,8 +19,8 @@ import (
 	"time"
 )
 
-// Version is set during build time
-var Version = "v1.1.0"
+// Version is set during build time via -ldflags
+var Version = "dev"
 
 // Config holds the application configuration
 type Config struct {

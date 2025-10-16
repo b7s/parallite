@@ -1,8 +1,9 @@
 .PHONY: build clean run install test test-client cross-compile release
 
-# Build the binary
+# Build the binary with version from version file
 build:
-	go build -o parallite main.go
+	@VERSION=$$(cat version 2>/dev/null || echo "dev"); \
+	go build -ldflags="-X main.Version=$$VERSION" -o parallite main.go
 
 # Build with version
 build-version:
@@ -29,19 +30,21 @@ run: build
 install:
 	go mod download
 
-# Cross-compile for all platforms
+# Cross-compile for all platforms with version
 cross-compile:
-	GOOS=linux GOARCH=amd64 go build -o parallite-linux main.go
-	GOOS=darwin GOARCH=amd64 go build -o parallite-macos main.go
-	GOOS=windows GOARCH=amd64 go build -o parallite.exe main.go
+	@VERSION=$$(cat version 2>/dev/null || echo "dev"); \
+	GOOS=linux GOARCH=amd64 go build -ldflags="-X main.Version=$$VERSION" -o parallite-linux main.go; \
+	GOOS=darwin GOARCH=amd64 go build -ldflags="-X main.Version=$$VERSION" -o parallite-macos main.go; \
+	GOOS=windows GOARCH=amd64 go build -ldflags="-X main.Version=$$VERSION" -o parallite.exe main.go
 
 # Interactive release process
 release:
 	@echo "🚀 Parallite Release Process"
 	@echo ""
-	@echo "Current version in code: $$(go run main.go --version 2>/dev/null || echo 'unknown')"
-	@echo ""
-	@read -p "Enter new version (format: v0.0.0): " VERSION; \
+	@CURRENT_VERSION=$$(cat version 2>/dev/null || echo "unknown"); \
+	echo "Current version: $$CURRENT_VERSION"; \
+	echo ""; \
+	read -p "Enter new version (format: v0.0.0): " VERSION; \
 	if [ -z "$$VERSION" ]; then \
 		echo "❌ Version cannot be empty"; \
 		exit 1; \
@@ -67,16 +70,16 @@ release:
 		exit 1; \
 	fi; \
 	echo ""; \
-	echo "📝 Updating version in main.go..."; \
-	sed -i.bak 's/var Version = ".*"/var Version = "'"$$VERSION"'"/' main.go; \
-	rm -f main.go.bak; \
-	echo "✅ Version updated in main.go"; \
+	echo "📝 Updating version file..."; \
+	echo "$$VERSION" > version; \
+	echo "✅ Version updated in version file"; \
 	echo ""; \
 	echo "🔨 Building with version $$VERSION..."; \
 	go build -ldflags="-X main.Version=$$VERSION" -o parallite main.go || exit 1; \
 	echo "✅ Build successful"; \
 	echo ""; \
 	echo "📦 Committing changes..."; \
+	git add version; \
 	git add -A; \
 	if git diff --cached --quiet; then \
 		echo "ℹ️  No changes to commit"; \
