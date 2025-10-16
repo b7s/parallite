@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Build binaries
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          LDFLAGS="-s -w -X main.Version=${VERSION}"
+          
+          # Linux AMD64
+          GOOS=linux GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o parallite-linux-amd64 main.go
+          tar -czf parallite-${VERSION}-linux-amd64.tar.gz parallite-linux-amd64
+          
+          # Linux ARM64
+          GOOS=linux GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o parallite-linux-arm64 main.go
+          tar -czf parallite-${VERSION}-linux-arm64.tar.gz parallite-linux-arm64
+          
+          # macOS AMD64
+          GOOS=darwin GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o parallite-darwin-amd64 main.go
+          tar -czf parallite-${VERSION}-darwin-amd64.tar.gz parallite-darwin-amd64
+          
+          # macOS ARM64 (Apple Silicon)
+          GOOS=darwin GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o parallite-darwin-arm64 main.go
+          tar -czf parallite-${VERSION}-darwin-arm64.tar.gz parallite-darwin-arm64
+          
+          # Windows AMD64
+          GOOS=windows GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o parallite-windows-amd64.exe main.go
+          zip parallite-${VERSION}-windows-amd64.zip parallite-windows-amd64.exe
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            parallite-${{ steps.version.outputs.VERSION }}-linux-amd64.tar.gz
+            parallite-${{ steps.version.outputs.VERSION }}-linux-arm64.tar.gz
+            parallite-${{ steps.version.outputs.VERSION }}-darwin-amd64.tar.gz
+            parallite-${{ steps.version.outputs.VERSION }}-darwin-arm64.tar.gz
+            parallite-${{ steps.version.outputs.VERSION }}-windows-amd64.zip
+          body: |
+            ## 🎉 Parallite ${{ steps.version.outputs.VERSION }}
+            
+            ### ✨ Features
+            - **Binary Protocol**: 4-byte length prefix for reliable daemon-worker communication
+            - **Submit/Await**: Separate message types with intelligent result caching
+            - **In-Memory Storage**: Fast task tracking without SQLite dependency
+            - **Worker Monitoring**: Auto-restart persistent workers, cleanup temporary workers
+            - **Flexible Configuration**: CLI flags, JSON config, or sensible defaults
+            - **Cross-Platform**: Linux, macOS, and Windows support
+            - **PSR-4 Standard**: Worker location at `src/Support/parallite-worker.php`
+            
+            ### 📦 Installation
+            
+            Download the binary for your platform below, extract, and run:
+            
+            ```bash
+            # Linux/macOS
+            tar -xzf parallite-${{ steps.version.outputs.VERSION }}-linux-amd64.tar.gz
+            chmod +x parallite-linux-amd64
+            ./parallite-linux-amd64 --help
+            
+            # Windows
+            # Extract the .zip file and run parallite-windows-amd64.exe
+            ```
+            
+            ### 🚀 Quick Start
+            
+            ```bash
+            # Create config
+            cat > parallite.json << EOF
+            {
+              "fixed_workers": 3,
+              "prefix_name": "worker",
+              "timeout_ms": 30000
+            }
+            EOF
+            
+            # Start daemon
+            ./parallite-linux-amd64
+            ```
+            
+            See [README.md](https://github.com/b7s/parallite/blob/main/README.md) for full documentation.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

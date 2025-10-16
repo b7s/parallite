@@ -1,0 +1,32 @@
+# Binaries
+parallite
+parallite.exe
+parallite-linux-*
+parallite-darwin-*
+parallite-windows-*
+parallite-macos
+test/test-client
+test/test-client.exe
+
+# Release artifacts
+*.tar.gz
+*.zip
+
+# Go build artifacts
+*.o
+*.a
+*.so
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

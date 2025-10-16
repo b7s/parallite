@@ -1,0 +1,21 @@
+{
+  "_comment": "Production configuration for Parallite daemon",
+  
+  "fixed_workers": 16,
+  "_fixed_workers_comment": "Number of persistent PHP workers. Adjust based on CPU cores and workload.",
+  
+  "prefix_name": "prod",
+  "_prefix_name_comment": "Prefix for worker names. Workers will be named prod-1, prod-2, etc.",
+  
+  "timeout_ms": 60000,
+  "_timeout_ms_comment": "Task execution timeout in milliseconds. Tasks exceeding this will be killed.",
+  
+  "socket": "/var/run/parallite/parallite.sock",
+  "_socket_comment": "IPC socket path. Ensure directory exists and has proper permissions.",
+  
+  "fail_mode": "continue",
+  "_fail_mode_comment": "Error handling: 'continue' logs errors and continues, 'stop_all' stops on first error.",
+  
+  "max_payload_bytes": 10485760,
+  "_max_payload_bytes_comment": "Maximum payload size in bytes (10MB = 10485760 bytes). Adjust based on task requirements."
+}
