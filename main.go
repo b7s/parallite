@@ -20,7 +20,7 @@ import (
 )
 
 // Version is set during build time
-var Version = "v1.0.0"
+var Version = "v1.1.0"
 
 // Config holds the application configuration
 type Config struct {
@@ -30,25 +30,28 @@ type Config struct {
 	Socket          string `json:"socket"`
 	FailMode        string `json:"fail_mode"`
 	MaxPayloadBytes int    `json:"max_payload_bytes"`
+	EnableBenchmark bool   `json:"enable_benchmark"`
 }
 
 // TaskRequest represents an incoming task
 type TaskRequest struct {
-	Type    string          `json:"type,omitempty"` // "submit" or "await"
-	TaskID  string          `json:"task_id"`
-	Command string          `json:"command,omitempty"`
-	Cwd     string          `json:"cwd,omitempty"`
-	Env     json.RawMessage `json:"env,omitempty"`
-	Payload json.RawMessage `json:"payload"`
-	Context json.RawMessage `json:"context,omitempty"`
+	Type            string          `json:"type,omitempty"` // "submit" or "await"
+	TaskID          string          `json:"task_id"`
+	Command         string          `json:"command,omitempty"`
+	Cwd             string          `json:"cwd,omitempty"`
+	Env             json.RawMessage `json:"env,omitempty"`
+	Payload         json.RawMessage `json:"payload"`
+	Context         json.RawMessage `json:"context,omitempty"`
+	EnableBenchmark *bool           `json:"enable_benchmark,omitempty"`
 }
 
 // TaskResponse represents a task result
 type TaskResponse struct {
-	TaskID string          `json:"task_id"`
-	Ok     bool            `json:"ok"`
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  string          `json:"error,omitempty"`
+	TaskID    string          `json:"task_id"`
+	Ok        bool            `json:"ok"`
+	Result    json.RawMessage `json:"result,omitempty"`
+	Error     string          `json:"error,omitempty"`
+	Benchmark json.RawMessage `json:"benchmark,omitempty"`
 }
 
 // Worker represents a PHP worker process
@@ -523,7 +526,11 @@ func (o *Orchestrator) handleConnection(conn net.Conn) {
 			continue
 		}
 
-		log.Printf("Received %s for task %s (payload: %d bytes)", req.Type, req.TaskID, length)
+		benchmarkStatus := "default"
+		if req.EnableBenchmark != nil {
+			benchmarkStatus = fmt.Sprintf("%v", *req.EnableBenchmark)
+		}
+		log.Printf("Received %s for task %s (payload: %d bytes, enable_benchmark: %s)", req.Type, req.TaskID, length, benchmarkStatus)
 
 		// Handle different message types
 		var resp *TaskResponse
@@ -784,6 +791,13 @@ func (o *Orchestrator) runTask(worker *Worker, task *TaskRequest) *TaskResponse 
 			Error:  fmt.Sprintf("Failed to marshal task: %v", err),
 		}
 	}
+
+	// Log benchmark setting being sent to worker
+	benchmarkStatus := "default"
+	if task.EnableBenchmark != nil {
+		benchmarkStatus = fmt.Sprintf("%v", *task.EnableBenchmark)
+	}
+	log.Printf("Sending task %s to worker with enable_benchmark: %s", task.TaskID, benchmarkStatus)
 
 	// Prepend 4-byte length header (big-endian)
 	length := uint32(len(taskData))

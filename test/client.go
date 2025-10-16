@@ -11,16 +11,18 @@ import (
 )
 
 type TestTaskRequest struct {
-	TaskID  string          `json:"task_id"`
-	Payload json.RawMessage `json:"payload"`
-	Context json.RawMessage `json:"context,omitempty"`
+	TaskID          string          `json:"task_id"`
+	Payload         json.RawMessage `json:"payload"`
+	Context         json.RawMessage `json:"context,omitempty"`
+	EnableBenchmark *bool           `json:"enable_benchmark,omitempty"`
 }
 
 type TestTaskResponse struct {
-	TaskID string          `json:"task_id"`
-	Ok     bool            `json:"ok"`
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  string          `json:"error,omitempty"`
+	TaskID    string          `json:"task_id"`
+	Ok        bool            `json:"ok"`
+	Result    json.RawMessage `json:"result,omitempty"`
+	Error     string          `json:"error,omitempty"`
+	Benchmark json.RawMessage `json:"benchmark,omitempty"`
 }
 
 func main() {
@@ -51,14 +53,19 @@ func main() {
 
 	fmt.Println("✓ Connected successfully\n")
 
-	// Test 1: Simple task
-	fmt.Println("--- Test 1: Simple Task ---")
+	// Test 1: Simple task (no benchmark flag - uses config default)
+	fmt.Println("--- Test 1: Simple Task (no benchmark flag) ---")
 	testSimpleTask(conn)
 	time.Sleep(500 * time.Millisecond)
 
-	// Test 2: Task with context
-	fmt.Println("\n--- Test 2: Task with Context ---")
-	testTaskWithContext(conn)
+	// Test 2: Task with benchmark enabled
+	fmt.Println("\n--- Test 2: Task with Benchmark ENABLED ---")
+	testTaskWithBenchmark(conn, true)
+	time.Sleep(500 * time.Millisecond)
+
+	// Test 3: Task with benchmark explicitly disabled
+	fmt.Println("\n--- Test 3: Task with Benchmark DISABLED ---")
+	testTaskWithBenchmark(conn, false)
 	time.Sleep(500 * time.Millisecond)
 
 	// Test 3: Multiple concurrent tasks
@@ -87,25 +94,19 @@ func testSimpleTask(conn net.Conn) {
 	printResponse(response)
 }
 
-func testTaskWithContext(conn net.Conn) {
+func testTaskWithBenchmark(conn net.Conn, enableBenchmark bool) {
 	taskID := fmt.Sprintf("task-%d", time.Now().UnixNano())
 
 	payload := map[string]interface{}{
-		"type": "computation",
-		"data": "Calculate sum",
+		"type": "benchmark_test",
+		"data": fmt.Sprintf("Testing with benchmark=%v", enableBenchmark),
 	}
 	payloadJSON, _ := json.Marshal(payload)
 
-	context := map[string]interface{}{
-		"numbers":   []int{1, 2, 3, 4, 5},
-		"operation": "sum",
-	}
-	contextJSON, _ := json.Marshal(context)
-
 	request := TestTaskRequest{
-		TaskID:  taskID,
-		Payload: payloadJSON,
-		Context: contextJSON,
+		TaskID:          taskID,
+		Payload:         payloadJSON,
+		EnableBenchmark: &enableBenchmark,
 	}
 
 	response := sendTask(conn, request)
@@ -191,6 +192,9 @@ func printResponse(response TestTaskResponse) {
 
 	if response.Ok {
 		fmt.Printf("Result:  %s\n", string(response.Result))
+		if len(response.Benchmark) > 0 {
+			fmt.Printf("Benchmark: %s\n", string(response.Benchmark))
+		}
 	} else {
 		fmt.Printf("Error:   %s\n", response.Error)
 	}

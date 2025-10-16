@@ -4,5 +4,7 @@
   "timeout_ms": 60000,
   "socket": "",
   "fail_mode": "continue",
-  "max_payload_bytes": 10485760
+  "max_payload_bytes": 10485760,
+  "enable_benchmark": false,
+  "worker_debug_logs": true
 }
