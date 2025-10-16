@@ -44,13 +44,17 @@ release:
 	@CURRENT_VERSION=$$(cat version 2>/dev/null || echo "unknown"); \
 	echo "Current version: $$CURRENT_VERSION"; \
 	echo ""; \
-	read -p "Enter new version (format: v0.0.0): " VERSION; \
+	read -p "Enter new version (format: 0.0.0 or v0.0.0): " VERSION; \
 	if [ -z "$$VERSION" ]; then \
 		echo "❌ Version cannot be empty"; \
 		exit 1; \
 	fi; \
+	if echo "$$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$$'; then \
+		VERSION="v$$VERSION"; \
+		echo "ℹ️  Added 'v' prefix: $$VERSION"; \
+	fi; \
 	if ! echo "$$VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$$'; then \
-		echo "❌ Invalid version format. Use: v0.0.0"; \
+		echo "❌ Invalid version format. Use: 0.0.0 or v0.0.0"; \
 		exit 1; \
 	fi; \
 	echo ""; \
