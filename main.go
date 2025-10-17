@@ -1115,7 +1115,7 @@ func (o *Orchestrator) cleanupRoutine() {
 
 // Shutdown gracefully stops the orchestrator
 func (o *Orchestrator) Shutdown() {
-	log.Println("Shutting down orchestrator...")
+	log.Println("Shutting down Parallite orchestrator...")
 
 	// Signal shutdown
 	close(o.shutdown)

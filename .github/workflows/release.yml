@@ -65,6 +65,7 @@ jobs:
             
             ### ✨ Features
             - **Binary Protocol**: 4-byte length prefix for reliable daemon-worker communication
+            - **MessagePack Serialization**: Faster, smaller, and more efficient than JSON
             - **Submit/Await**: Separate message types with intelligent result caching
             - **In-Memory Storage**: Fast task tracking without SQLite dependency
             - **Worker Monitoring**: Auto-restart persistent workers, cleanup temporary workers
