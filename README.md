@@ -130,18 +130,22 @@ The PHP package provides:
 
 **Quick Start with PHP:**
 
-```bash
-# Install PHP package
-composer require b7s/parallite-php
+```php
+require 'vendor/autoload.php';
 
-# Start the daemon
-./parallite
+// No imports needed - functions are available globally!
 
-# Use in your PHP code
-use B7s\Parallite\Client;
+// Basic usage
+$result = await(async(fn() => 'Hello World'));
+echo $result; // Hello World
 
-$client = new Client();
-$result = $client->run(fn() => heavy_computation());
+// With promise chaining
+$result = await(
+    async(fn() => 1 + 2)
+        ->then(fn($n) => $n * 2)
+        ->then(fn($n) => $n + 5)
+);
+echo $result; // 11
 ```
 
 See the [parallite-php repository](https://github.com/b7s/parallite-php) for complete documentation and examples.
@@ -219,7 +223,7 @@ nohup ./parallite > /var/log/parallite.log 2>&1 &
 All configuration options can be overridden:
 
 ```bash
---config string                Path to config file (default: parallite.json)
+--config string               Path to config file (default: parallite.json)
 --fixed-workers int           Number of persistent workers
 --prefix-name string          Worker name prefix
 --timeout-ms int              Task timeout in milliseconds
