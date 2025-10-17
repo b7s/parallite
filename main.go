@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"flag"
@@ -200,6 +201,28 @@ func loadConfig(path string) (Config, error) {
 
 	if err := json.Unmarshal(data, &config); err != nil {
 		return config, err
+	}
+
+	// Validate configuration
+	if config.FixedWorkers < 0 {
+		log.Printf("Warning: fixed_workers cannot be negative, setting to 0")
+		config.FixedWorkers = 0
+	}
+	if config.PrefixName == "" {
+		log.Printf("Warning: prefix_name is empty, using default 'work'")
+		config.PrefixName = "work"
+	}
+	if config.TimeoutMs <= 0 {
+		log.Printf("Warning: timeout_ms must be positive, using default 60000ms")
+		config.TimeoutMs = 60000
+	}
+	if config.FailMode != "stop_all" && config.FailMode != "continue" {
+		log.Printf("Warning: invalid fail_mode '%s', using 'continue'", config.FailMode)
+		config.FailMode = "continue"
+	}
+	if config.MaxPayloadBytes <= 0 {
+		log.Printf("Warning: max_payload_bytes must be positive, using default 10MB")
+		config.MaxPayloadBytes = 10 * 1024 * 1024
 	}
 
 	return config, nil
@@ -581,8 +604,9 @@ func (o *Orchestrator) handleConnection(conn net.Conn) {
 			o.responseChans[req.TaskID] = respChan
 			o.mu.Unlock()
 
-			// Queue task
-			o.taskQueue <- &req
+			// Copy task to avoid pointer reuse issues
+			taskCopy := req
+			o.taskQueue <- &taskCopy
 
 			// Wait for response
 			resp = <-respChan
@@ -592,6 +616,11 @@ func (o *Orchestrator) handleConnection(conn net.Conn) {
 		// Cache the result for future await requests
 		o.mu.Lock()
 		o.resultCache[req.TaskID] = resp
+		// Clean up response channel
+		if respChan, exists := o.responseChans[req.TaskID]; exists {
+			close(respChan)
+			delete(o.responseChans, req.TaskID)
+		}
 		o.mu.Unlock()
 
 		// Send response
@@ -681,23 +710,29 @@ func (o *Orchestrator) executeTask(task *TaskRequest) {
 	}
 	o.mu.Unlock()
 
+	// Create context with timeout
+	timeout := time.Duration(o.config.TimeoutMs) * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	// Execute task with timeout
 	result := make(chan *TaskResponse, 1)
 	go func() {
-		resp := o.runTask(worker, task)
+		resp := o.runTask(ctx, worker, task)
 		result <- resp
 	}()
 
-	timeout := time.Duration(o.config.TimeoutMs) * time.Millisecond
 	var response *TaskResponse
 
 	select {
 	case response = <-result:
 		// Task completed
-	case <-time.After(timeout):
+	case <-ctx.Done():
 		// Timeout - kill worker
 		log.Printf("Task %s timed out, killing worker %s", task.TaskID, worker.Name)
-		worker.Cmd.Process.Kill()
+		if worker.Cmd != nil && worker.Cmd.Process != nil {
+			worker.Cmd.Process.Kill()
+		}
 		response = &TaskResponse{
 			TaskID: task.TaskID,
 			Ok:     false,
@@ -765,7 +800,7 @@ func (o *Orchestrator) executeTask(task *TaskRequest) {
 	}
 }
 
-func (o *Orchestrator) runTask(worker *Worker, task *TaskRequest) *TaskResponse {
+func (o *Orchestrator) runTask(ctx context.Context, worker *Worker, task *TaskRequest) *TaskResponse {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("Panic in task %s: %v", task.TaskID, r)
@@ -831,28 +866,60 @@ func (o *Orchestrator) runTask(worker *Worker, task *TaskRequest) *TaskResponse 
 
 	log.Printf("Sent task %s to worker %s (%d bytes)", task.TaskID, worker.Name, n)
 
-	// Read 4-byte length header from worker response
+	// Read 4-byte length header from worker response with context awareness
 	lengthBuf := make([]byte, 4)
-	if _, err := io.ReadFull(worker.Stdout, lengthBuf); err != nil {
-		log.Printf("Failed to read response length from worker %s: %v", worker.Name, err)
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := io.ReadFull(worker.Stdout, lengthBuf)
+		readDone <- err
+	}()
+
+	select {
+	case <-ctx.Done():
+		log.Printf("Context cancelled while reading response length from worker %s", worker.Name)
 		return &TaskResponse{
 			TaskID: task.TaskID,
 			Ok:     false,
-			Error:  fmt.Sprintf("Failed to read worker response length: %v", err),
+			Error:  "Task cancelled or timed out",
+		}
+	case err := <-readDone:
+		if err != nil {
+			log.Printf("Failed to read response length from worker %s: %v", worker.Name, err)
+			return &TaskResponse{
+				TaskID: task.TaskID,
+				Ok:     false,
+				Error:  fmt.Sprintf("Failed to read worker response length: %v", err),
+			}
 		}
 	}
 
 	responseLength := binary.BigEndian.Uint32(lengthBuf)
 	log.Printf("Worker %s response length: %d bytes", worker.Name, responseLength)
 
-	// Read response payload
+	// Read response payload with context awareness
 	responseBuf := make([]byte, responseLength)
-	if _, err := io.ReadFull(worker.Stdout, responseBuf); err != nil {
-		log.Printf("Failed to read response payload from worker %s: %v", worker.Name, err)
+	readPayloadDone := make(chan error, 1)
+	go func() {
+		_, err := io.ReadFull(worker.Stdout, responseBuf)
+		readPayloadDone <- err
+	}()
+
+	select {
+	case <-ctx.Done():
+		log.Printf("Context cancelled while reading response payload from worker %s", worker.Name)
 		return &TaskResponse{
 			TaskID: task.TaskID,
 			Ok:     false,
-			Error:  fmt.Sprintf("Failed to read worker response: %v", err),
+			Error:  "Task cancelled or timed out",
+		}
+	case err := <-readPayloadDone:
+		if err != nil {
+			log.Printf("Failed to read response payload from worker %s: %v", worker.Name, err)
+			return &TaskResponse{
+				TaskID: task.TaskID,
+				Ok:     false,
+				Error:  fmt.Sprintf("Failed to read worker response: %v", err),
+			}
 		}
 	}
 
@@ -993,23 +1060,38 @@ func (o *Orchestrator) Shutdown() {
 		o.listener.Close()
 	}
 
-	// Stop all workers
-	for _, worker := range o.workers {
+	// Stop all workers with mutex protection
+	o.mu.Lock()
+	workersToStop := make([]*Worker, len(o.workers))
+	copy(workersToStop, o.workers)
+	o.mu.Unlock()
+
+	for _, worker := range workersToStop {
+		if worker == nil {
+			continue
+		}
 		if worker.Cmd != nil && worker.Cmd.Process != nil {
-			worker.Stdin.Close()
+			// Close stdin safely
+			if worker.Stdin != nil {
+				worker.Stdin.Close()
+			}
 			worker.Cmd.Process.Signal(syscall.SIGTERM)
 
 			// Wait briefly for graceful shutdown
-			done := make(chan struct{})
+			done := make(chan error, 1)
 			go func() {
-				worker.Cmd.Wait()
-				close(done)
+				done <- worker.Cmd.Wait()
 			}()
 
 			select {
-			case <-done:
+			case err := <-done:
+				if err != nil {
+					log.Printf("Worker %s exited with error: %v", worker.Name, err)
+				}
 			case <-time.After(2 * time.Second):
+				log.Printf("Force killing worker %s", worker.Name)
 				worker.Cmd.Process.Kill()
+				worker.Cmd.Wait() // Reap zombie
 			}
 		}
 	}
