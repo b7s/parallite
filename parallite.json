@@ -6,5 +6,6 @@
   "fail_mode": "continue",
   "max_payload_bytes": 10485760,
   "enable_benchmark": false,
-  "worker_debug_logs": true
+  "worker_debug_logs": true,
+  "debug_logs": false
 }

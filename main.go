@@ -18,6 +18,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 // Version is set during build time via -ldflags
@@ -32,27 +34,65 @@ type Config struct {
 	FailMode        string `json:"fail_mode"`
 	MaxPayloadBytes int    `json:"max_payload_bytes"`
 	EnableBenchmark bool   `json:"enable_benchmark"`
+	DebugLogs       bool   `json:"debug_logs"`
+}
+
+// LogLevel represents the logging level
+type LogLevel int
+
+const (
+	LogLevelError LogLevel = iota
+	LogLevelWarn
+	LogLevelInfo
+	LogLevelDebug
+)
+
+var currentLogLevel = LogLevelInfo
+
+// Log functions with levels
+func logError(format string, v ...interface{}) {
+	if currentLogLevel >= LogLevelError {
+		log.Printf("[ERROR] "+format, v...)
+	}
+}
+
+func logWarn(format string, v ...interface{}) {
+	if currentLogLevel >= LogLevelWarn {
+		log.Printf("[WARN] "+format, v...)
+	}
+}
+
+func logInfo(format string, v ...interface{}) {
+	if currentLogLevel >= LogLevelInfo {
+		log.Printf("[INFO] "+format, v...)
+	}
+}
+
+func logDebug(format string, v ...interface{}) {
+	if currentLogLevel >= LogLevelDebug {
+		log.Printf("[DEBUG] "+format, v...)
+	}
 }
 
 // TaskRequest represents an incoming task
 type TaskRequest struct {
-	Type            string          `json:"type,omitempty"` // "submit" or "await"
-	TaskID          string          `json:"task_id"`
-	Command         string          `json:"command,omitempty"`
-	Cwd             string          `json:"cwd,omitempty"`
-	Env             json.RawMessage `json:"env,omitempty"`
-	Payload         json.RawMessage `json:"payload"`
-	Context         json.RawMessage `json:"context,omitempty"`
-	EnableBenchmark *bool           `json:"enable_benchmark,omitempty"`
+	Type            string      `json:"type,omitempty" msgpack:"type,omitempty"`
+	TaskID          string      `json:"task_id" msgpack:"task_id"`
+	Command         string      `json:"command,omitempty" msgpack:"command,omitempty"`
+	Cwd             string      `json:"cwd,omitempty" msgpack:"cwd,omitempty"`
+	Env             interface{} `json:"env,omitempty" msgpack:"env,omitempty"`
+	Payload         string      `json:"payload" msgpack:"payload"`
+	Context         interface{} `json:"context,omitempty" msgpack:"context,omitempty"`
+	EnableBenchmark *bool       `json:"enable_benchmark,omitempty" msgpack:"enable_benchmark,omitempty"`
 }
 
 // TaskResponse represents a task result
 type TaskResponse struct {
-	TaskID    string          `json:"task_id"`
-	Ok        bool            `json:"ok"`
-	Result    json.RawMessage `json:"result,omitempty"`
-	Error     string          `json:"error,omitempty"`
-	Benchmark json.RawMessage `json:"benchmark,omitempty"`
+	TaskID    string      `json:"task_id" msgpack:"task_id"`
+	Ok        bool        `json:"ok" msgpack:"ok"`
+	Result    interface{} `json:"result,omitempty" msgpack:"result,omitempty"`
+	Error     string      `json:"error,omitempty" msgpack:"error,omitempty"`
+	Benchmark interface{} `json:"benchmark,omitempty" msgpack:"benchmark,omitempty"`
 }
 
 // Worker represents a PHP worker process
@@ -118,6 +158,7 @@ func main() {
 	socket := flag.String("socket", "", "IPC socket path (empty = use config)")
 	failMode := flag.String("fail-mode", "", "Fail mode: stop_all or continue (empty = use config)")
 	maxPayloadBytes := flag.Int("max-payload-bytes", 0, "Max payload size in bytes (0 = use config)")
+	debugLogs := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
 
 	// Show version and exit
@@ -151,13 +192,23 @@ func main() {
 	if *maxPayloadBytes > 0 {
 		config.MaxPayloadBytes = *maxPayloadBytes
 	}
+	if *debugLogs {
+		config.DebugLogs = true
+	}
+
+	// Configure log level based on config
+	if config.DebugLogs {
+		currentLogLevel = LogLevelDebug
+	} else {
+		currentLogLevel = LogLevelInfo
+	}
 
 	// Set default socket based on OS
 	if config.Socket == "" {
 		config.Socket = getDefaultSocket()
 	}
 
-	log.Printf("Starting Parallite orchestrator with config: %+v", config)
+	logInfo("Starting Parallite orchestrator with config: %+v", config)
 
 	// Initialize orchestrator
 	orch, err := NewOrchestrator(config)
@@ -542,10 +593,18 @@ func (o *Orchestrator) handleConnection(conn net.Conn) {
 		}
 		log.Printf("Payload read successfully")
 
-		// Parse request
+		// Debug: show first bytes in hex
+		debugLen := 50
+		if len(payload) < debugLen {
+			debugLen = len(payload)
+		}
+		logDebug("Payload hex (first %d bytes): %x", debugLen, payload[:debugLen])
+
+		// Parse request using MessagePack
 		var req TaskRequest
-		if err := json.Unmarshal(payload, &req); err != nil {
-			log.Printf("Failed to parse request: %v", err)
+		if err := msgpack.Unmarshal(payload, &req); err != nil {
+			logError("Failed to unmarshal request: %v", err)
+			logDebug("Raw payload: %q", string(payload))
 			continue
 		}
 
@@ -553,7 +612,8 @@ func (o *Orchestrator) handleConnection(conn net.Conn) {
 		if req.EnableBenchmark != nil {
 			benchmarkStatus = fmt.Sprintf("%v", *req.EnableBenchmark)
 		}
-		log.Printf("Received %s for task %s (payload: %d bytes, enable_benchmark: %s)", req.Type, req.TaskID, length, benchmarkStatus)
+		logInfo("Received %s for task %s (payload: %d bytes, enable_benchmark: %s)", req.Type, req.TaskID, length, benchmarkStatus)
+		logDebug("TaskRequest: Type=%q, TaskID=%q, PayloadLen=%d", req.Type, req.TaskID, len(req.Payload))
 
 		// Handle different message types
 		var resp *TaskResponse
@@ -623,8 +683,8 @@ func (o *Orchestrator) handleConnection(conn net.Conn) {
 		}
 		o.mu.Unlock()
 
-		// Send response
-		respData, _ := json.Marshal(resp)
+		// Send response using MessagePack
+		respData, _ := msgpack.Marshal(resp)
 		respLength := uint32(len(respData))
 
 		log.Printf("Sending response for task %s (%d bytes)", req.TaskID, respLength)
@@ -817,8 +877,8 @@ func (o *Orchestrator) runTask(ctx context.Context, worker *Worker, task *TaskRe
 		}
 	}
 
-	// Send task to worker
-	taskData, err := json.Marshal(task)
+	// Send task to worker using MessagePack
+	taskData, err := msgpack.Marshal(task)
 	if err != nil {
 		return &TaskResponse{
 			TaskID: task.TaskID,
@@ -924,13 +984,18 @@ func (o *Orchestrator) runTask(ctx context.Context, worker *Worker, task *TaskRe
 	}
 
 	var response TaskResponse
-	if err := json.Unmarshal(responseBuf, &response); err != nil {
-		log.Printf("Failed to parse worker response: %v. Raw: %s", err, string(responseBuf))
+	if err := msgpack.Unmarshal(responseBuf, &response); err != nil {
+		log.Printf("Failed to unmarshal worker response: %v", err)
 		return &TaskResponse{
 			TaskID: task.TaskID,
 			Ok:     false,
-			Error:  fmt.Sprintf("Failed to parse worker response: %v", err),
+			Error:  fmt.Sprintf("Failed to unmarshal worker response: %v", err),
 		}
+	}
+
+	// Log error if task failed
+	if !response.Ok {
+		log.Printf("Task %s failed with error: %s", response.TaskID, response.Error)
 	}
 
 	return &response

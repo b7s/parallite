@@ -27,19 +27,13 @@ A high-performance, cross-platform orchestrator for parallel execution of PHP cl
 - Per-task timeout enforcement with process termination
 
 ### ✅ IPC Protocol
-- Binary protocol: 4-byte big-endian length + JSON payload
+- Binary protocol: 4-byte big-endian length + MessagePack payload
+- MessagePack serialization for 30-50% smaller payloads and 2-3x faster processing
+- No Base64 overhead - direct binary transport
 - Unix domain sockets (Linux/macOS)
 - TCP fallback for Windows (port 9876)
 - Request/response pattern with task_id correlation
 - Supports serialized PHP closures with optional context
-
-### ✅ SQLite Integration
-- Pure Go implementation (modernc.org/sqlite)
-- Persistent or in-memory database
-- Task registry with status tracking
-- Automatic cleanup based on retention policy
-- **Errors NOT stored in DB** (returned in response only)
-- Indexed for performance
 
 ### ✅ Error Handling
 - Payload size validation (max 10MB)
@@ -63,7 +57,7 @@ parallite-go-daemon/
 ├── build.sh                          # Build script with cross-compile
 ├── .gitignore                        # Git ignore rules
 ├── php/
-│   └── worker.php                    # PHP worker script (3KB)
+│   └── parallite-worker.php          # PHP worker script (3KB)
 └── examples/
     ├── test_client.php               # PHP test client
     ├── parallite.service             # systemd service file
@@ -85,18 +79,6 @@ parallite-go-daemon/
 - Goroutines for worker monitoring
 - Mutex-protected shared state
 - Channel-based communication
-
-### Database Schema
-```sql
-CREATE TABLE tasks (
-    task_id TEXT PRIMARY KEY,
-    status TEXT NOT NULL,           -- pending, running, done
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    started_at DATETIME,
-    completed_at DATETIME,
-    result TEXT                     -- JSON (success only)
-);
-```
 
 ### IPC Message Format
 
@@ -136,8 +118,6 @@ CREATE TABLE tasks (
 | `timeout_ms` | int | 60000 | Task timeout (ms) |
 | `socket` | string | OS-specific | IPC endpoint |
 | `fail_mode` | string | "continue" | Error handling mode |
-| `db_persistent` | bool | false | Persistent vs in-memory DB |
-| `db_retention_minutes` | int | 60 | Task record retention |
 | `max_payload_bytes` | int | 10485760 | Max payload size (10MB) |
 
 ## Building
@@ -163,7 +143,7 @@ go build -o parallite main.go
 ./parallite
 
 # With CLI overrides
-./parallite --fixed-workers 4 --timeout-ms 30000 --db-persistent
+./parallite --fixed-workers 4 --timeout-ms 30000
 
 # With custom config file
 ./parallite --config /path/to/config.json
@@ -182,7 +162,7 @@ php examples/test_client.php
 ## Dependencies
 
 - **Go 1.21+**: Core language
-- **modernc.org/sqlite**: Pure Go SQLite (cross-platform, no CGo)
+- **MessagePack**: vmihailenco/msgpack
 
 ## Performance Characteristics
 
@@ -223,9 +203,8 @@ php examples/test_client.php
 2. Configuration
 3. Worker management
 4. IPC protocol
-5. SQLite usage
-6. Error handling
-7. Deliverables
+5. Error handling
+6. Deliverables
 
 ## License
 

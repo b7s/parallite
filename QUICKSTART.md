@@ -29,10 +29,6 @@
    ./parallite --fixed-workers 4 --timeout-ms 30000
    ```
 
-3. **Run with persistent database:**
-   ```bash
-   ./parallite --db-persistent --db-retention-minutes 120
-   ```
 
 ## Testing the Daemon
 
@@ -41,24 +37,30 @@ You can test the daemon using a simple PHP client. Create `test_client.php`:
 ```php
 <?php
 
+require 'vendor/autoload.php';
+
+use MessagePack\MessagePack;
+
 // Connect to the socket
 $socket = socket_create(AF_UNIX, SOCK_STREAM, 0);
 socket_connect($socket, '/tmp/parallite.sock');
 
 // Create a test task
 $task = [
+    'type' => 'submit',
     'task_id' => uniqid('task_'),
-    'payload' => serialize(function() {
+    'payload' => \Opis\Closure\serialize(function() {
         return 'Hello from Parallite!';
     }),
+    'context' => [],
 ];
 
-// Encode task
-$taskJson = json_encode($task);
-$length = pack('N', strlen($taskJson));
+// Encode task with MessagePack
+$taskPacked = MessagePack::pack($task);
+$length = pack('N', strlen($taskPacked));
 
 // Send task
-socket_write($socket, $length . $taskJson);
+socket_write($socket, $length . $taskPacked);
 
 // Read response length
 $lengthData = socket_read($socket, 4);
@@ -66,7 +68,7 @@ $responseLength = unpack('N', $lengthData)[1];
 
 // Read response
 $response = socket_read($socket, $responseLength);
-$result = json_decode($response, true);
+$result = MessagePack::unpack($response);
 
 print_r($result);
 
@@ -126,11 +128,6 @@ php test_client.php
 ps aux | grep "php.*worker.php"
 ```
 
-### View Database Records
-```bash
-sqlite3 parallite.sqlite "SELECT * FROM tasks ORDER BY created_at DESC LIMIT 10;"
-```
-
 ### Monitor Logs
 The daemon logs to stderr. Redirect to a file:
 ```bash
@@ -166,10 +163,3 @@ Check PHP error logs and ensure `php/worker.php` is executable:
 ```bash
 chmod +x php/worker.php
 ```
-
-## Next Steps
-
-- Integrate with your PHP package
-- Set up as a systemd service (Linux)
-- Configure log rotation
-- Monitor performance metrics

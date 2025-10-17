@@ -25,8 +25,10 @@ Parallite is a robust orchestrator that manages persistent PHP worker processes,
 - 🔒 **Concurrency Safe** - Mutex-protected resource management and graceful shutdown
 - 🌐 **Cross-Platform** - Works on Linux, macOS, and Windows
 - 🔌 **Efficient IPC** - Unix sockets (Linux/macOS) or TCP (Windows)
+- ⚡ **MessagePack Protocol** - Binary serialization for 30-50% smaller payloads and faster processing
 - 📊 **Resource Management** - Configurable worker pools and payload limits
 - ✅ **Configuration Validation** - Automatic validation with sensible defaults
+- 🐛 **Debug Logging** - Configurable log levels for development and production
 
 ## 🚀 Quick Start
 
@@ -164,7 +166,9 @@ Create a `parallite.json` file in the same directory as the binary:
   "timeout_ms": 60000,
   "socket": "",
   "fail_mode": "continue",
-  "max_payload_bytes": 10485760
+  "max_payload_bytes": 10485760,
+  "enable_benchmark": false,
+  "debug_logs": false
 }
 ```
 
@@ -178,6 +182,8 @@ Create a `parallite.json` file in the same directory as the binary:
 | `socket` | string | OS-specific | IPC endpoint (auto-detected if empty) |
 | `fail_mode` | string | "continue" | Error handling: "continue" or "stop_all" |
 | `max_payload_bytes` | int | 10485760 | Maximum payload size in bytes (must be > 0) |
+| `enable_benchmark` | bool | false | Enable performance benchmarking for tasks |
+| `debug_logs` | bool | false | Enable debug-level logging |
 
 **Important Notes:**
 
@@ -235,6 +241,7 @@ All configuration options can be overridden:
 --socket string               IPC socket path
 --fail-mode string            Error handling: continue|stop_all
 --max-payload-bytes int       Maximum payload size
+--debug                       Enable debug logging
 ```
 
 ## 🏗️ Architecture
@@ -268,20 +275,23 @@ if (!$socket) {
     throw new Exception("Failed to connect to daemon: $errstr ($errno)");
 }
 
-// Send task (4-byte length + JSON payload)
-$payload = json_encode([
+// Send task (4-byte length + MessagePack payload)
+use MessagePack\MessagePack;
+
+$payload = MessagePack::pack([
+    'type' => 'submit',
     'task_id' => 'task-123',
-    'command' => 'php artisan my:command',
-    'cwd' => '/path/to/project',
+    'payload' => \Opis\Closure\serialize($closure),
+    'context' => [],
 ]);
 
 $length = pack('N', strlen($payload)); // Big-endian 32-bit
 fwrite($socket, $length . $payload);
 
-// Read response (4-byte length + JSON payload)
+// Read response (4-byte length + MessagePack payload)
 $lengthData = fread($socket, 4);
 $responseLength = unpack('N', $lengthData)[1];
-$response = json_decode(fread($socket, $responseLength), true);
+$response = MessagePack::unpack(fread($socket, $responseLength));
 
 fclose($socket);
 ```
@@ -290,13 +300,20 @@ fclose($socket);
 
 ### IPC Protocol
 
-Communication uses a simple binary protocol:
+Communication uses a **MessagePack binary protocol** for optimal performance:
+
+**Why MessagePack?**
+- ⚡ **30-50% smaller** payloads compared to JSON
+- 🚀 **2-3x faster** serialization/deserialization
+- 🔒 **Type-safe** binary format
+- ✅ **No Base64 overhead** - direct binary transport
 
 1. **Request Format**:
    - 4-byte length header (big-endian uint32)
-   - JSON payload:
+   - MessagePack payload:
      ```json
      {
+       "type": "submit",
        "task_id": "unique-task-id",
        "payload": "serialized PHP closure",
        "context": {}
@@ -305,7 +322,7 @@ Communication uses a simple binary protocol:
 
 2. **Response Format**:
    - 4-byte length header (big-endian uint32)
-   - JSON payload:
+   - MessagePack payload:
      ```json
      {
        "task_id": "unique-task-id",
@@ -321,6 +338,15 @@ Communication uses a simple binary protocol:
        "error": "error message"
      }
      ```
+
+**Protocol Flow:**
+```
+PHP Client → MessagePack → Go Daemon → MessagePack → PHP Worker
+    ↓                           ↓                          ↓
+Serialize                   Route Task              Execute Closure
+    ↑                           ↑                          ↑
+Deserialize ← MessagePack ← Go Daemon ← MessagePack ← Worker Response
+```
 
 ### Task Storage
 
@@ -358,16 +384,21 @@ The orchestrator maintains task status and results in memory:
 
 The daemon communicates with PHP workers using a `php/parallite-worker.php` script:
 
-- **Input**: 4-byte length prefix (big-endian) + JSON task request
-- **Output**: 4-byte length prefix (big-endian) + JSON response
+- **Input**: 4-byte length prefix (big-endian) + MessagePack task request
+- **Output**: 4-byte length prefix (big-endian) + MessagePack response
 - **Communication**: stdin/stdout pipes
 - **Lifecycle**: Workers run in continuous loop for persistent execution
+- **Serialization**: MessagePack for optimal performance (requires `rybakit/msgpack` PHP package)
 
 For worker implementation, see the [parallite-php](https://github.com/b7s/parallite-php) package.
 
 ## 📋 Requirements
 
 - **Go**: 1.21 or higher
+- **Go Dependencies**:
+  - `github.com/vmihailenco/msgpack/v5` - MessagePack serialization
+- **PHP Dependencies** (for workers):
+  - `rybakit/msgpack` - MessagePack for PHP
 
 ## 🔧 Development
 

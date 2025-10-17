@@ -8,34 +8,13 @@ declare(strict_types=1);
  * This worker process is spawned by the Go daemon to execute PHP closures.
  */
 
-// Find project root by looking for vendor/autoload.php
-function findProjectRoot(string $startDir): ?string
-{
-    $dir = $startDir;
-    $maxLevels = 10;
+// Load ProjectRootFinderService first (before autoloader)
+require_once dirname(__DIR__).'/Service/ProjectRootFinderService.php';
 
-    for ($i = 0; $i < $maxLevels; $i++) {
-        if (file_exists($dir.'/vendor/autoload.php')) {
-            return $dir;
-        }
+use MessagePack\MessagePack;
+use Parallite\Service\ProjectRootFinderService;
 
-        $parentDir = dirname($dir);
-        if ($parentDir === $dir) {
-            break; // Reached filesystem root
-        }
-
-        $dir = $parentDir;
-    }
-
-    return null;
-}
-
-$projectRoot = findProjectRoot(__DIR__);
-
-if ($projectRoot === null) {
-    error_log('[Worker] Failed to find project root');
-    exit(1);
-}
+$projectRoot = ProjectRootFinderService::find(__DIR__);
 
 // Load autoloader
 $autoloadPath = $projectRoot.'/vendor/autoload.php';
@@ -133,9 +112,15 @@ while (true) {
     }
 
     // Decode request
-    $request = json_decode($payload, true);
+    try {
+        $request = MessagePack::unpack($payload);
+    } catch (\Throwable $e) {
+        workerLog('Invalid request: failed to unpack MessagePack - ' . $e->getMessage());
+        continue;
+    }
+
     if (!is_array($request)) {
-        workerLog('Invalid request: not a valid JSON array');
+        workerLog('Invalid request: not a valid array');
         continue;
     }
 
@@ -161,12 +146,14 @@ while (true) {
             'task_id' => $taskId,
         ];
 
-        $responseJson = json_encode($response);
-        if ($responseJson === false) {
+        try {
+            $responsePacked = MessagePack::pack($response);
+        } catch (\Throwable $e) {
+            workerLog("Failed to pack response: {$e->getMessage()}");
             continue;
         }
-        $responseLength = pack('N', strlen($responseJson));
-        fwrite(STDOUT, $responseLength.$responseJson);
+        $responseLength = pack('N', strlen($responsePacked));
+        fwrite(STDOUT, $responseLength.$responsePacked);
         fflush(STDOUT);
 
         continue;
@@ -177,11 +164,7 @@ while (true) {
         continue;
     }
 
-    $serialized = base64_decode($request['payload'], true);
-    if ($serialized === false) {
-        workerLog("Invalid request for task {$taskId}: failed to decode base64");
-        continue;
-    }
+    $serialized = $request['payload'];
 
     $context = $request['context'] ?? [];
 
@@ -294,14 +277,15 @@ while (true) {
 
     // Send response
     workerLog("Sending response for task: {$taskId}");
-    $responseJson = json_encode($response);
-    if ($responseJson === false) {
-        workerLog("Failed to encode response for task: {$taskId}");
+    try {
+        $responsePacked = MessagePack::pack($response);
+    } catch (\Throwable $e) {
+        workerLog("Failed to pack response for task {$taskId}: {$e->getMessage()}");
         continue;
     }
-    $responseLength = pack('N', strlen($responseJson));
+    $responseLength = pack('N', strlen($responsePacked));
 
-    fwrite(STDOUT, $responseLength.$responseJson);
+    fwrite(STDOUT, $responseLength.$responsePacked);
     fflush(STDOUT);
     workerLog("Response sent for task: $taskId");
 }
