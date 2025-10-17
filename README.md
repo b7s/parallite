@@ -135,17 +135,18 @@ require 'vendor/autoload.php';
 
 // No imports needed - functions are available globally!
 
-// Basic usage
-$result = await(async(fn() => 'Hello World'));
-echo $result; // Hello World
+// Create multiple promises
+$p1 = async(fn() => sleep(1) && 'Task 1');
+$p2 = async(fn() => sleep(1) && 'Task 2');
+$p3 = async(fn() => sleep(1) && 'Task 3');
 
-// With promise chaining
-$result = await(
-    async(fn() => 1 + 2)
-        ->then(fn($n) => $n * 2)
-        ->then(fn($n) => $n + 5)
-);
-echo $result; // 11
+// Option 1: Await individually
+$results = [await($p1), await($p2), await($p3)];
+
+// Option 2: Await array of promises (cleaner)
+$results = await([$p1, $p2, $p3]);
+
+// Duration: ~1s (parallel) instead of 3s (sequential)
 ```
 
 See the [parallite-php repository](https://github.com/b7s/parallite-php) for complete documentation and examples.
