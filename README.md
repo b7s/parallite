@@ -21,10 +21,12 @@ Parallite is a robust orchestrator that manages persistent PHP worker processes,
 - 🔄 **True Parallelism** - Execute multiple PHP closures simultaneously
 - 🛡️ **Fault Tolerant** - Auto-restart workers on crash, configurable error handling
 - 💾 **In-Memory Task Cache** - Fast task status tracking with automatic cleanup
-- ⏱️ **Timeout Control** - Per-task execution timeouts
+- ⏱️ **Context-Based Timeouts** - Clean cancellation with context propagation
+- 🔒 **Concurrency Safe** - Mutex-protected resource management and graceful shutdown
 - 🌐 **Cross-Platform** - Works on Linux, macOS, and Windows
 - 🔌 **Efficient IPC** - Unix sockets (Linux/macOS) or TCP (Windows)
 - 📊 **Resource Management** - Configurable worker pools and payload limits
+- ✅ **Configuration Validation** - Automatic validation with sensible defaults
 
 ## 🚀 Quick Start
 
@@ -170,14 +172,16 @@ Create a `parallite.json` file in the same directory as the binary:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `fixed_workers` | int | 1 | Number of persistent PHP workers |
+| `fixed_workers` | int | 1 | Number of persistent PHP workers (must be >= 0) |
 | `prefix_name` | string | "work" | Prefix for worker names (e.g., "work-1") |
-| `timeout_ms` | int | 60000 | Task execution timeout in milliseconds |
+| `timeout_ms` | int | 60000 | Task execution timeout in milliseconds (must be > 0) |
 | `socket` | string | OS-specific | IPC endpoint (auto-detected if empty) |
 | `fail_mode` | string | "continue" | Error handling: "continue" or "stop_all" |
-| `max_payload_bytes` | int | 10485760 | Maximum payload size in bytes (10MB) |
+| `max_payload_bytes` | int | 10485760 | Maximum payload size in bytes (must be > 0) |
 
 **Important Notes:**
+
+- **Configuration Validation**: All configuration values are validated at startup. Invalid values are automatically corrected to safe defaults with warning logs.
 
 - **Task Result Retention**: Completed task results are kept in memory for `timeout_ms + 5 minutes`. This ensures results remain available even if the client is slightly delayed in retrieving them. For example, with a 60-second timeout, results are retained for 6 minutes.
 
@@ -336,13 +340,19 @@ The orchestrator maintains task status and results in memory:
    - `stop_all`: Stop all workers and shut down on first error
 
 2. **Timeout Handling**:
-   - Tasks exceeding `timeout_ms` are killed
-   - Worker process is terminated
+   - Tasks exceeding `timeout_ms` are cancelled via context propagation
+   - Worker I/O operations abort cleanly on timeout
+   - Worker process is terminated safely with nil checks
    - Persistent workers are automatically restarted
 
 3. **Worker Crashes**:
    - Persistent workers restart automatically after 1 second
    - Tasks assigned to crashed workers fail with error response
+
+4. **Concurrency Safety**:
+   - Response channels are properly closed and cleaned up after use
+   - Task requests are copied before queueing to prevent data races
+   - Shutdown sequence is mutex-protected to prevent race conditions
 
 ## PHP Worker Protocol
 
