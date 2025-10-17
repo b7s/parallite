@@ -369,6 +369,7 @@ func (o *Orchestrator) startWorker(name string, persistent bool) (*Worker, error
 
 	// Search for worker file in multiple locations (priority order)
 	searchPaths := []string{
+		filepath.Join("vendor", "parallite", "parallite-php", "src", "Support", workerFileName), // vendor/parallite/parallite-php/src/Support/parallite-worker.php
 		filepath.Join("src", "Support", workerFileName), // ./src/Support/parallite-worker.php (recommended)
 		workerFileName,                       // ./parallite-worker.php (root)
 		filepath.Join("php", workerFileName), // ./php/parallite-worker.php
