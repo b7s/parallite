@@ -684,8 +684,17 @@ func (o *Orchestrator) handleConnection(conn net.Conn) {
 		}
 		o.mu.Unlock()
 
-		// Send response using MessagePack
-		respData, _ := msgpack.Marshal(resp)
+		// Send response
+		// If Result contains raw bytes from worker, send those directly
+		// Otherwise marshal the response (for errors)
+		var respData []byte
+		if rawBytes, ok := resp.Result.([]byte); ok {
+			// Raw worker response - send directly
+			respData = rawBytes
+		} else {
+			// Error response from daemon - marshal it
+			respData, _ = msgpack.Marshal(resp)
+		}
 		respLength := uint32(len(respData))
 
 		log.Printf("Sending response for task %s (%d bytes)", req.TaskID, respLength)
@@ -984,22 +993,26 @@ func (o *Orchestrator) runTask(ctx context.Context, worker *Worker, task *TaskRe
 		}
 	}
 
-	var response TaskResponse
-	if err := msgpack.Unmarshal(responseBuf, &response); err != nil {
-		log.Printf("Failed to unmarshal worker response: %v", err)
-		return &TaskResponse{
-			TaskID: task.TaskID,
-			Ok:     false,
-			Error:  fmt.Sprintf("Failed to unmarshal worker response: %v", err),
+	// Don't unmarshal - just transport the raw bytes from worker to client
+	// The Go daemon is purely a transport layer
+	// PHP client will unmarshal the response directly
+	
+	// We can do a quick check for logging purposes only
+	var quickCheck map[string]interface{}
+	if err := msgpack.Unmarshal(responseBuf, &quickCheck); err == nil {
+		if ok, exists := quickCheck["ok"].(bool); exists && !ok {
+			if errMsg, exists := quickCheck["error"].(string); exists {
+				log.Printf("Task %s failed with error: %s", task.TaskID, errMsg)
+			}
 		}
 	}
 
-	// Log error if task failed
-	if !response.Ok {
-		log.Printf("Task %s failed with error: %s", response.TaskID, response.Error)
+	// Return response with raw bytes - PHP will unmarshal
+	return &TaskResponse{
+		TaskID: task.TaskID,
+		Ok:     true, // Always true here, PHP will check actual status
+		Result: responseBuf, // Raw msgpack bytes from worker
 	}
-
-	return &response
 }
 
 func (o *Orchestrator) sendResponse(taskID string, response *TaskResponse) {
