@@ -1,7 +1,7 @@
 {
   "fixed_workers": 1,
   "prefix_name": "work",
-  "timeout_ms": 60000,
+  "timeout_ms": 900000,
   "socket": "",
   "fail_mode": "continue",
   "max_payload_bytes": 10485760,

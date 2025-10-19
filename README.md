@@ -126,7 +126,7 @@ This repository contains only the Go daemon. For PHP client integration, worker 
 
 The PHP package provides:
 
-- ✅ **Ready-to-use Composer package** - Install via `composer require b7s/parallite-php`
+- ✅ **Ready-to-use Composer package** - Install via `composer require parallite/parallite-php`
 - ✅ **Worker implementation** - Pre-built worker for executing closures
 - ✅ **Client library** - Easy-to-use API for submitting tasks
 - ✅ **Complete examples** - Standalone scripts and framework integration
@@ -163,7 +163,7 @@ Create a `parallite.json` file in the same directory as the binary:
 {
   "fixed_workers": 1,
   "prefix_name": "work",
-  "timeout_ms": 60000,
+  "timeout_ms": 900000,
   "socket": "",
   "fail_mode": "continue",
   "max_payload_bytes": 10485760,
@@ -178,7 +178,7 @@ Create a `parallite.json` file in the same directory as the binary:
 |-------|------|---------|-------------|
 | `fixed_workers` | int | 1 | Number of persistent PHP workers (must be >= 0) |
 | `prefix_name` | string | "work" | Prefix for worker names (e.g., "work-1") |
-| `timeout_ms` | int | 60000 | Task execution timeout in milliseconds (must be > 0) |
+| `timeout_ms` | int | 900000 | Task execution timeout in milliseconds (must be > 0) |
 | `socket` | string | OS-specific | IPC endpoint (auto-detected if empty) |
 | `fail_mode` | string | "continue" | Error handling: "continue" or "stop_all" |
 | `max_payload_bytes` | int | 10485760 | Maximum payload size in bytes (must be > 0) |
@@ -397,8 +397,6 @@ For worker implementation, see the [parallite-php](https://github.com/b7s/parall
 - **Go**: 1.21 or higher
 - **Go Dependencies**:
   - `github.com/vmihailenco/msgpack/v5` - MessagePack serialization
-- **PHP Dependencies** (for workers):
-  - `rybakit/msgpack` - MessagePack for PHP
 
 ## 🔧 Development
 
