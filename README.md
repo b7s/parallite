@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="art/parallite-logo.webp" alt="Parallite Logo" width="128">
+<img src="docs/art/parallite-logo.webp" alt="Parallite Logo" width="128">
 <h1>Parallite</h1>
 
 </div>
@@ -17,16 +17,18 @@ Parallite is a robust orchestrator that manages persistent PHP worker processes,
 
 ## ✨ Features
 
-- 🚀 **High Performance** - Go-powered orchestration with persistent worker pools
-- 🔄 **True Parallelism** - Execute multiple PHP closures simultaneously
+- 🚀 **High Performance** - Go-powered orchestrator with event-driven scheduling
+- 🔄 **True Parallelism** - Execute multiple PHP closures simultaneously using dedicated workers
+- 🧠 **Predictable Event Loop** - Central loop coordinates IPC, worker IO, and maintenance tasks
+- 🧵 **Blocking Pool Offload** - File-system and process operations run on a managed thread pool
 - 🛡️ **Fault Tolerant** - Auto-restart workers on crash, configurable error handling
 - 💾 **In-Memory Task Cache** - Fast task status tracking with automatic cleanup
-- ⏱️ **Context-Based Timeouts** - Clean cancellation with context propagation
+- ⏱️ **Timeout Enforcement** - Per-task deadlines enforced through context propagation
 - 🔒 **Concurrency Safe** - Mutex-protected resource management and graceful shutdown
 - 🌐 **Cross-Platform** - Works on Linux, macOS, and Windows
 - 🔌 **Efficient IPC** - Unix sockets (Linux/macOS) or TCP (Windows)
 - ⚡ **MessagePack Protocol** - Binary serialization for 30-50% smaller payloads and faster processing
-- 📊 **Resource Management** - Configurable worker pools and payload limits
+- 📊 **Resource Management** - Configurable worker pools, payload limits, and worker script path
 - ✅ **Configuration Validation** - Automatic validation with sensible defaults
 - 🐛 **Debug Logging** - Configurable log levels for development and production
 
@@ -71,7 +73,7 @@ make install        # Install dependencies
 make cross-compile  # Build for all platforms
 ```
 
-See [INSTALL.md](INSTALL.md) for detailed installation instructions including systemd service setup.
+See [INSTALL.md](docs/INSTALL.md) for detailed installation instructions including systemd service setup.
 
 ## 🛠️ Development
 
@@ -84,6 +86,7 @@ make release
 ```
 
 This command will:
+
 1. ✅ Show current version
 2. ✅ Ask for new version (format: `v0.0.0`)
 3. ✅ Ask for release message
@@ -94,6 +97,7 @@ This command will:
 8. ✅ Trigger GitHub Actions to build binaries for all platforms
 
 **Example:**
+
 ```bash
 $ make release
 🚀 Parallite Release Process
@@ -168,7 +172,8 @@ Create a `parallite.json` file in the same directory as the binary:
   "fail_mode": "continue",
   "max_payload_bytes": 10485760,
   "enable_benchmark": false,
-  "debug_logs": false
+  "debug_logs": false,
+  "worker_script": "/absolute/path/to/parallite-worker.php"
 }
 ```
 
@@ -184,6 +189,7 @@ Create a `parallite.json` file in the same directory as the binary:
 | `max_payload_bytes` | int | 10485760 | Maximum payload size in bytes (must be > 0) |
 | `enable_benchmark` | bool | false | Enable performance benchmarking for tasks |
 | `debug_logs` | bool | false | Enable debug-level logging |
+| `worker_script` | string | auto-detect | Absolute path to PHP worker script (falls back to bundled search paths) |
 
 **Important Notes:**
 
@@ -191,9 +197,10 @@ Create a `parallite.json` file in the same directory as the binary:
 
 - **Task Result Retention**: Completed task results are kept in memory for `timeout_ms + 5 minutes`. This ensures results remain available even if the client is slightly delayed in retrieving them. For example, with a 60-second timeout, results are retained for 6 minutes.
 
-- **Automatic Cleanup**: The daemon runs a cleanup routine every 5 minutes to remove old task records from memory, keeping memory usage efficient.
+- **Automatic Cleanup**: The daemon schedules cleanup on the event loop to remove old task records from memory every 5 minutes, keeping memory usage efficient.
 
 **Socket defaults:**
+
 - Linux/macOS: `/tmp/parallite.sock`
 - Windows: `\\.\pipe\parallite` (currently uses TCP on port 9876)
 
@@ -210,6 +217,9 @@ Create a `parallite.json` file in the same directory as the binary:
 
 # Override socket path via CLI
 ./parallite --socket /tmp/my-custom.sock
+
+# Override worker script path via CLI
+./parallite --worker-script /var/www/app/vendor/parallite/parallite-php/src/Support/parallite-worker.php
 
 # Override socket path via config (parallite.json)
 {
@@ -234,28 +244,40 @@ nohup ./parallite > /var/log/parallite.log 2>&1 &
 All configuration options can be overridden:
 
 ```bash
---config string               Path to config file (default: parallite.json)
---fixed-workers int           Number of persistent workers
---prefix-name string          Worker name prefix
---timeout-ms int              Task timeout in milliseconds
---socket string               IPC socket path
---fail-mode string            Error handling: continue|stop_all
---max-payload-bytes int       Maximum payload size
---debug                       Enable debug logging
+--config string              Path to config file (default: parallite.json)
+--fixed-workers int          Number of persistent workers
+--prefix-name string         Worker name prefix
+--timeout-ms int             Task timeout in milliseconds
+--socket string              IPC socket path
+--fail-mode string           Error handling: continue|stop_all
+--max-payload-bytes int      Maximum payload size
+--worker-script string       Absolute path to PHP worker script
+--debug                      Enable debug logging
 ```
 
 ## 🏗️ Architecture
 
-### Worker Management
+### Orchestration Pipeline
 
-1. **Persistent Workers**: `fixed_workers` PHP processes start on launch and run continuously
-   - Named using `prefix_name` + index (e.g., "work-1", "work-2")
-   - Automatically restart if they crash
-   - Receive `WORKER_NAME` environment variable
+1. **Event Loop Core**
+   - Central goroutine processes inbound connections, scheduled tasks, and timers
+   - Maintains deterministic ordering for IPC accept, worker IO, and cleanup callbacks
+   - Heartbeat logging runs on the same loop to avoid extraneous goroutines
 
-2. **On-Demand Workers**: Created when all persistent workers are busy
-   - Execute a single task and exit
-   - Named with timestamp suffix (e.g., "work-temp-1234567890")
+2. **Blocking Thread Pool**
+   - Dedicated pool executes filesystem checks, worker restarts, and process waits
+   - Prevents the event loop from stalling on OS-level blocking calls
+   - Automatically scales to CPU count (minimum of 2 threads)
+
+3. **Worker Management**
+   - Persistent workers start at boot using configured prefix and worker script path
+   - Temporary workers spin up when no idle persistent worker is available
+   - Event loop schedules maintenance to terminate idle temporary workers and restart failed persistent ones
+
+4. **Task Lifecycle**
+   - Incoming requests register response channels, then enqueue work on the event loop
+   - Blocking pool executes the actual PHP interaction under context timeout supervision
+   - Raw MessagePack responses flow back to clients without additional decoding
 
 ### Connecting from PHP
 
@@ -303,6 +325,7 @@ fclose($socket);
 Communication uses a **MessagePack binary protocol** for optimal performance:
 
 **Why MessagePack?**
+
 - ⚡ **30-50% smaller** payloads compared to JSON
 - 🚀 **2-3x faster** serialization/deserialization
 - 🔒 **Type-safe** binary format
@@ -348,13 +371,11 @@ Serialize                   Route Task              Execute Closure
 Deserialize ← MessagePack ← Go Daemon ← MessagePack ← Worker Response
 ```
 
-### Task Storage
-
-The orchestrator maintains task status and results in memory:
+### Task Storage & Maintenance
 
 - **Task Status**: Tracks pending, running, and completed tasks
 - **Result Cache**: Stores task results for retrieval
-- **Automatic Cleanup**: Old task records are removed every 5 minutes
+- **Scheduled Cleanup**: Event loop schedules cleanup callbacks every 5 minutes
 - **Retention**: Results kept for `timeout_ms + 5 minutes`
 
 **Important:** Task results are stored in memory only. Errors are returned directly in the response payload.
@@ -372,7 +393,8 @@ The orchestrator maintains task status and results in memory:
    - Persistent workers are automatically restarted
 
 3. **Worker Crashes**:
-   - Persistent workers restart automatically after 1 second
+   - Event loop schedules restarts through the blocking pool
+   - Persistent workers restart automatically with queue reinjection
    - Tasks assigned to crashed workers fail with error response
 
 4. **Concurrency Safety**:
@@ -470,11 +492,11 @@ See [TESTING.md](TESTING.md) for comprehensive testing documentation.
 
 ## 📚 Documentation
 
-- **[QUICKSTART.md](QUICKSTART.md)** - Get started in 5 minutes
-- **[INSTALL.md](INSTALL.md)** - Detailed installation and deployment
-- **[TESTING.md](TESTING.md)** - Testing without PHP integration
-- **[PROJECT_SUMMARY.md](PROJECT_SUMMARY.md)** - Technical architecture
-- **[CHANGELOG.md](CHANGELOG.md)** - Version history
+- **[QUICKSTART.md](docs/QUICKSTART.md)** - Get started in 5 minutes
+- **[INSTALL.md](docs/INSTALL.md)** - Detailed installation and deployment
+- **[TESTING.md](docs/TESTING.md)** - Testing without PHP integration
+- **[PROJECT_SUMMARY.md](docs/PROJECT_SUMMARY.md)** - Technical architecture
+- **[CHANGELOG.md](docs/CHANGELOG.md)** - Version history
 
 ## 🤝 Contributing
 

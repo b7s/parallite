@@ -3,16 +3,19 @@
 ## Installation
 
 1. **Install dependencies:**
+
    ```bash
    go mod download
    ```
 
 2. **Build the binary:**
+
    ```bash
-   go build -o parallite main.go
+   go build -o bin/parallite .
    ```
-   
+
    Or use the Makefile:
+
    ```bash
    make build
    ```
@@ -20,14 +23,22 @@
 ## Basic Usage
 
 1. **Start the daemon with default settings:**
+
    ```bash
-   ./parallite
+   ./bin/parallite
    ```
 
 2. **Start with custom configuration:**
+
    ```bash
-   ./parallite --fixed-workers 4 --timeout-ms 30000
+   ./bin/parallite --fixed-workers 4 --timeout-ms 30000 --worker-script /path/to/parallite-worker.php
    ```
+
+3. **What happens internally:**
+
+   - The orchestrator boots an event loop that drives IPC, worker IO, and scheduled maintenance.
+   - A managed blocking pool runs filesystem checks and process waits without stalling the loop.
+   - Persistent workers are registered immediately; temporary workers spin up when demand exceeds capacity.
 
 
 ## Testing the Daemon
@@ -76,6 +87,7 @@ socket_close($socket);
 ```
 
 Run the test:
+
 ```bash
 php test_client.php
 ```
@@ -83,41 +95,42 @@ php test_client.php
 ## Configuration Examples
 
 ### High-Performance Setup
+
 ```json
 {
   "fixed_workers": 8,
   "prefix_name": "worker",
   "timeout_ms": 30000,
   "fail_mode": "continue",
-  "db_persistent": true,
-  "db_retention_minutes": 60,
-  "max_payload_bytes": 10485760
+  "max_payload_bytes": 10485760,
+  "worker_script": "/var/www/app/vendor/parallite/parallite-php/src/Support/parallite-worker.php"
 }
 ```
 
 ### Development Setup
+
 ```json
 {
   "fixed_workers": 1,
   "prefix_name": "dev",
   "timeout_ms": 120000,
   "fail_mode": "stop_all",
-  "db_persistent": false,
-  "db_retention_minutes": 10,
-  "max_payload_bytes": 10485760
+  "max_payload_bytes": 10485760,
+  "debug_logs": true,
+  "worker_script": ""
 }
 ```
 
 ### Production Setup
+
 ```json
 {
   "fixed_workers": 16,
   "prefix_name": "prod",
   "timeout_ms": 60000,
   "fail_mode": "continue",
-  "db_persistent": true,
-  "db_retention_minutes": 1440,
-  "max_payload_bytes": 10485760
+  "max_payload_bytes": 10485760,
+  "worker_script": "/opt/parallite/parallite-worker.php"
 }
 ```
 
@@ -130,8 +143,9 @@ ps aux | grep "php.*worker.php"
 
 ### Monitor Logs
 The daemon logs to stderr. Redirect to a file:
+
 ```bash
-./parallite 2>&1 | tee parallite.log
+./bin/parallite 2>&1 | tee parallite.log
 ```
 
 ## Stopping the Daemon

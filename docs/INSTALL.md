@@ -3,8 +3,9 @@
 ## Prerequisites
 
 ### Required
+
 - **Go 1.21 or higher**: [Download Go](https://golang.org/dl/)
-- **PHP 7.4 or higher**: With CLI support
+- **PHP 8.3 or higher**: With CLI support
 
 ### Verify Prerequisites
 

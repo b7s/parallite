@@ -35,6 +35,7 @@ type Config struct {
 	MaxPayloadBytes int    `json:"max_payload_bytes"`
 	EnableBenchmark bool   `json:"enable_benchmark"`
 	DebugLogs       bool   `json:"debug_logs"`
+	WorkerScript    string `json:"worker_script"`
 }
 
 // LogLevel represents the logging level
@@ -95,6 +96,16 @@ type TaskResponse struct {
 	Benchmark interface{} `json:"benchmark,omitempty" msgpack:"benchmark,omitempty"`
 }
 
+// TaskStatus represents the status of a task in memory
+type TaskStatus struct {
+	TaskID      string
+	Status      string // "pending", "running", "completed", "failed"
+	SubmittedAt time.Time
+	StartedAt   *time.Time
+	CompletedAt *time.Time
+	Result      *TaskResponse
+}
+
 // Worker represents a PHP worker process
 type Worker struct {
 	Name       string
@@ -122,16 +133,6 @@ func (w *Worker) IsAlive() bool {
 	return err == nil
 }
 
-// TaskStatus represents the status of a task in memory
-type TaskStatus struct {
-	TaskID      string
-	Status      string // "pending", "running", "completed", "failed"
-	SubmittedAt time.Time
-	StartedAt   *time.Time
-	CompletedAt *time.Time
-	Result      *TaskResponse
-}
-
 // Orchestrator manages the entire system
 type Orchestrator struct {
 	config        Config
@@ -140,12 +141,15 @@ type Orchestrator struct {
 	workers       []*Worker
 	listener      net.Listener
 	workerPool    chan *Worker
-	taskQueue     chan *TaskRequest
 	responseChans map[string]chan *TaskResponse
 	mu            sync.RWMutex
 	wg            sync.WaitGroup
 	shutdown      chan struct{}
 	stopAll       bool
+	ctx           context.Context
+	cancel        context.CancelFunc
+	eventLoop     *EventLoop
+	blockingPool  *BlockingPool
 }
 
 func main() {
@@ -158,6 +162,7 @@ func main() {
 	socket := flag.String("socket", "", "IPC socket path (empty = use config)")
 	failMode := flag.String("fail-mode", "", "Fail mode: stop_all or continue (empty = use config)")
 	maxPayloadBytes := flag.Int("max-payload-bytes", 0, "Max payload size in bytes (0 = use config)")
+	workerScript := flag.String("worker-script", "", "Absolute path to the PHP worker script")
 	debugLogs := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
 
@@ -191,6 +196,9 @@ func main() {
 	}
 	if *maxPayloadBytes > 0 {
 		config.MaxPayloadBytes = *maxPayloadBytes
+	}
+	if *workerScript != "" {
+		config.WorkerScript = *workerScript
 	}
 	if *debugLogs {
 		config.DebugLogs = true
@@ -275,6 +283,12 @@ func loadConfig(path string) (Config, error) {
 		log.Printf("Warning: max_payload_bytes must be positive, using default 10MB")
 		config.MaxPayloadBytes = 10 * 1024 * 1024
 	}
+	if config.WorkerScript != "" {
+		if _, err := os.Stat(config.WorkerScript); err != nil {
+			log.Printf("Warning: configured worker_script '%s' not accessible: %v", config.WorkerScript, err)
+			config.WorkerScript = ""
+		}
+	}
 
 	return config, nil
 }
@@ -288,14 +302,21 @@ func getDefaultSocket() string {
 
 // NewOrchestrator creates a new orchestrator instance
 func NewOrchestrator(config Config) (*Orchestrator, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	eventLoop := NewEventLoop(ctx, 256)
+	blockingPool := NewBlockingPool(ctx, runtime.NumCPU())
+
 	orch := &Orchestrator{
 		config:        config,
 		taskStatus:    make(map[string]*TaskStatus),
 		resultCache:   make(map[string]*TaskResponse),
 		workerPool:    make(chan *Worker, config.FixedWorkers),
-		taskQueue:     make(chan *TaskRequest, 100),
 		responseChans: make(map[string]chan *TaskResponse),
 		shutdown:      make(chan struct{}),
+		ctx:           ctx,
+		cancel:        cancel,
+		eventLoop:     eventLoop,
+		blockingPool:  blockingPool,
 	}
 
 	return orch, nil
@@ -303,6 +324,7 @@ func NewOrchestrator(config Config) (*Orchestrator, error) {
 
 // Start begins the orchestrator
 func (o *Orchestrator) Start() error {
+	o.eventLoop.Start()
 	// Start persistent workers
 	workersStarted := 0
 	for i := 1; i <= o.config.FixedWorkers; i++ {
@@ -328,18 +350,6 @@ func (o *Orchestrator) Start() error {
 		return err
 	}
 
-	// Start cleanup routine
-	o.wg.Add(1)
-	go o.cleanupRoutine()
-
-	// Start worker monitor routine
-	o.wg.Add(1)
-	go o.monitorWorkers()
-
-	// Start task processor
-	o.wg.Add(1)
-	go o.processTaskQueue()
-
 	// Start heartbeat to show daemon is alive
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
@@ -353,6 +363,9 @@ func (o *Orchestrator) Start() error {
 			}
 		}
 	}()
+
+	// Schedule maintenance tasks on event loop
+	o.scheduleMaintenance()
 
 	// Wait for shutdown
 	<-o.shutdown
@@ -368,15 +381,19 @@ func (o *Orchestrator) startWorker(name string, persistent bool) (*Worker, error
 	}
 
 	// Search for worker file in multiple locations (priority order)
-	searchPaths := []string{
+	searchPaths := make([]string, 0, 8)
+	if o.config.WorkerScript != "" {
+		searchPaths = append(searchPaths, o.config.WorkerScript)
+	}
+	searchPaths = append(searchPaths,
 		filepath.Join("vendor", "parallite", "parallite-php", "src", "Support", workerFileName), // vendor/parallite/parallite-php/src/Support/parallite-worker.php
-		filepath.Join("src", "Support", workerFileName), // ./src/Support/parallite-worker.php (recommended)
+		filepath.Join("src", "Support", workerFileName),                                         // ./src/Support/parallite-worker.php (recommended)
 		workerFileName,                       // ./parallite-worker.php (root)
 		filepath.Join("php", workerFileName), // ./php/parallite-worker.php
 		filepath.Join("..", "..", "src", "Support", workerFileName), // ../../src/Support/parallite-worker.php (from vendor/bin)
 		filepath.Join("..", "..", workerFileName),                   // ../../parallite-worker.php (from vendor/bin)
 		filepath.Join("..", "..", "php", workerFileName),            // ../../php/parallite-worker.php (from vendor/bin)
-	}
+	)
 
 	var phpWorkerPath string
 	var found bool
@@ -667,7 +684,7 @@ func (o *Orchestrator) handleConnection(conn net.Conn) {
 
 			// Copy task to avoid pointer reuse issues
 			taskCopy := req
-			o.taskQueue <- &taskCopy
+			o.submitTask(&taskCopy)
 
 			// Wait for response
 			resp = <-respChan
@@ -722,20 +739,22 @@ func (o *Orchestrator) handleConnection(conn net.Conn) {
 	}
 }
 
-func (o *Orchestrator) processTaskQueue() {
-	defer o.wg.Done()
-	for {
-		select {
-		case <-o.shutdown:
-			return
-		case task := <-o.taskQueue:
-			go o.executeTask(task)
-		}
+func (o *Orchestrator) submitTask(task *TaskRequest) {
+	err := o.eventLoop.Post(func(loopCtx context.Context) {
+		o.scheduleTask(loopCtx, task)
+	})
+	if err != nil {
+		logError("Failed to submit task %s to event loop: %v", task.TaskID, err)
+		o.sendResponse(task.TaskID, &TaskResponse{
+			TaskID: task.TaskID,
+			Ok:     false,
+			Error:  "Failed to schedule task",
+		})
 	}
 }
 
-func (o *Orchestrator) executeTask(task *TaskRequest) {
-	// Record task in memory
+func (o *Orchestrator) scheduleTask(loopCtx context.Context, task *TaskRequest) {
+	// Record task submission
 	now := time.Now()
 	o.mu.Lock()
 	o.taskStatus[task.TaskID] = &TaskStatus{
@@ -745,6 +764,32 @@ func (o *Orchestrator) executeTask(task *TaskRequest) {
 	}
 	o.mu.Unlock()
 
+	err := o.blockingPool.Submit(func(ctx context.Context) error {
+		o.executeTask(ctx, task)
+		return nil
+	})
+	if err != nil {
+		o.mu.Lock()
+		if status, exists := o.taskStatus[task.TaskID]; exists {
+			status.Status = "failed"
+			completed := time.Now()
+			status.CompletedAt = &completed
+			status.Result = &TaskResponse{
+				TaskID: task.TaskID,
+				Ok:     false,
+				Error:  "Failed to schedule task",
+			}
+		}
+		o.mu.Unlock()
+		o.sendResponse(task.TaskID, &TaskResponse{
+			TaskID: task.TaskID,
+			Ok:     false,
+			Error:  "Failed to schedule task",
+		})
+	}
+}
+
+func (o *Orchestrator) executeTask(parentCtx context.Context, task *TaskRequest) {
 	// Get worker from pool or create on-demand
 	var worker *Worker
 	select {
@@ -782,7 +827,7 @@ func (o *Orchestrator) executeTask(task *TaskRequest) {
 
 	// Create context with timeout
 	timeout := time.Duration(o.config.TimeoutMs) * time.Millisecond
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
 
 	// Execute task with timeout
@@ -996,7 +1041,7 @@ func (o *Orchestrator) runTask(ctx context.Context, worker *Worker, task *TaskRe
 	// Don't unmarshal - just transport the raw bytes from worker to client
 	// The Go daemon is purely a transport layer
 	// PHP client will unmarshal the response directly
-	
+
 	// We can do a quick check for logging purposes only
 	var quickCheck map[string]interface{}
 	if err := msgpack.Unmarshal(responseBuf, &quickCheck); err == nil {
@@ -1010,7 +1055,7 @@ func (o *Orchestrator) runTask(ctx context.Context, worker *Worker, task *TaskRe
 	// Return response with raw bytes - PHP will unmarshal
 	return &TaskResponse{
 		TaskID: task.TaskID,
-		Ok:     true, // Always true here, PHP will check actual status
+		Ok:     true,        // Always true here, PHP will check actual status
 		Result: responseBuf, // Raw msgpack bytes from worker
 	}
 }
@@ -1025,107 +1070,163 @@ func (o *Orchestrator) sendResponse(taskID string, response *TaskResponse) {
 	}
 }
 
+func (o *Orchestrator) scheduleMaintenance() {
+	if o.eventLoop == nil {
+		return
+	}
+
+	if err := o.eventLoop.Post(func(ctx context.Context) {
+		o.workerMaintenanceLoop(ctx)
+	}); err != nil {
+		logError("Failed to start worker maintenance loop: %v", err)
+	}
+
+	if err := o.eventLoop.Post(func(ctx context.Context) {
+		o.cleanupMaintenanceLoop(ctx)
+	}); err != nil {
+		logError("Failed to start cleanup maintenance loop: %v", err)
+	}
+}
+
+func (o *Orchestrator) workerMaintenanceLoop(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+
+	o.runWorkerMonitor()
+
+	if ctx.Err() != nil {
+		return
+	}
+
+	const interval = 10 * time.Second
+	if err := o.eventLoop.PostDelayed(interval, func(nextCtx context.Context) {
+		o.workerMaintenanceLoop(nextCtx)
+	}); err != nil {
+		logError("Failed to reschedule worker maintenance: %v", err)
+	}
+}
+
+func (o *Orchestrator) cleanupMaintenanceLoop(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+
+	o.runCleanup()
+
+	if ctx.Err() != nil {
+		return
+	}
+
+	const interval = 5 * time.Minute
+	if err := o.eventLoop.PostDelayed(interval, func(nextCtx context.Context) {
+		o.cleanupMaintenanceLoop(nextCtx)
+	}); err != nil {
+		logError("Failed to reschedule cleanup maintenance: %v", err)
+	}
+}
+
+func (o *Orchestrator) runWorkerMonitor() {
+	type restartRequest struct {
+		index int
+		name  string
+	}
+
+	restarts := make([]restartRequest, 0)
+	tempKills := make([]*Worker, 0)
+
+	o.mu.Lock()
+	for i, worker := range o.workers {
+		if worker == nil {
+			continue
+		}
+
+		alive := worker.IsAlive()
+		if !alive {
+			if worker.Persistent {
+				restarts = append(restarts, restartRequest{index: i, name: worker.Name})
+				o.workers[i] = nil
+			} else {
+				tempKills = append(tempKills, worker)
+			}
+			continue
+		}
+
+		if !worker.Persistent {
+			worker.mu.Lock()
+			idle := !worker.Busy
+			worker.mu.Unlock()
+			if idle {
+				tempKills = append(tempKills, worker)
+			}
+		}
+	}
+	o.mu.Unlock()
+
+	for _, worker := range tempKills {
+		w := worker
+		if err := o.blockingPool.Submit(func(ctx context.Context) error {
+			if w.Stdin != nil {
+				w.Stdin.Close()
+			}
+			if w.Cmd != nil && w.Cmd.Process != nil {
+				w.Cmd.Process.Kill()
+				w.Cmd.Wait()
+			}
+			return nil
+		}); err != nil {
+			logError("Failed to schedule cleanup for worker %s: %v", w.Name, err)
+		}
+	}
+
+	for _, req := range restarts {
+		restart := req
+		if err := o.blockingPool.Submit(func(ctx context.Context) error {
+			newWorker, err := o.startWorker(restart.name, true)
+			if err != nil {
+				log.Printf("Failed to restart worker %s: %v", restart.name, err)
+				return nil
+			}
+
+			o.mu.Lock()
+			if restart.index < len(o.workers) {
+				o.workers[restart.index] = newWorker
+			} else {
+				o.workers = append(o.workers, newWorker)
+			}
+			o.mu.Unlock()
+
+			o.workerPool <- newWorker
+			return nil
+		}); err != nil {
+			logError("Failed to schedule restart for worker %s: %v", restart.name, err)
+		}
+	}
+}
+
+func (o *Orchestrator) runCleanup() {
+	retentionMs := o.config.TimeoutMs + (5 * 60 * 1000)
+	cutoff := time.Now().Add(-time.Duration(retentionMs) * time.Millisecond)
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	cleaned := 0
+	for taskID, status := range o.taskStatus {
+		if status.CompletedAt != nil && status.CompletedAt.Before(cutoff) {
+			delete(o.taskStatus, taskID)
+			delete(o.resultCache, taskID)
+			delete(o.responseChans, taskID)
+			cleaned++
+		}
+	}
+
+	if cleaned > 0 {
+		log.Printf("Cleaned up %d old task records from memory", cleaned)
+	}
+}
+
 // monitorWorkers periodically checks worker health and cleans up dead processes
-func (o *Orchestrator) monitorWorkers() {
-	defer o.wg.Done()
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-o.shutdown:
-			return
-		case <-ticker.C:
-			o.mu.Lock()
-			for i, worker := range o.workers {
-				if worker == nil {
-					continue
-				}
-
-				// Check if worker process is still alive
-				if !worker.IsAlive() {
-					if worker.Persistent {
-						log.Printf("Persistent worker %s died unexpectedly, restarting...", worker.Name)
-
-						// Remove dead worker from list
-						o.workers[i] = nil
-
-						// Try to restart
-						newWorker, err := o.startWorker(worker.Name, true)
-						if err != nil {
-							log.Printf("Failed to restart worker %s: %v", worker.Name, err)
-						} else {
-							o.workers[i] = newWorker
-							o.workerPool <- newWorker
-						}
-					} else {
-						// Temporary worker - should be dead, just ensure cleanup
-						if worker.Cmd != nil && worker.Cmd.Process != nil {
-							worker.Cmd.Process.Kill()
-							worker.Cmd.Wait() // Reap zombie
-						}
-						log.Printf("Cleaned up dead temporary worker %s", worker.Name)
-					}
-				} else {
-					// Worker is alive - check if it's a temporary worker that should be dead
-					worker.mu.Lock()
-					isIdle := !worker.Busy
-					isPersistent := worker.Persistent
-					worker.mu.Unlock()
-
-					if !isPersistent && isIdle {
-						// Temporary worker that finished its task but is still running
-						log.Printf("Killing idle temporary worker %s", worker.Name)
-						if worker.Stdin != nil {
-							worker.Stdin.Close()
-						}
-						if worker.Cmd != nil && worker.Cmd.Process != nil {
-							worker.Cmd.Process.Kill()
-							worker.Cmd.Wait() // Reap zombie
-						}
-					}
-				}
-			}
-			o.mu.Unlock()
-		}
-	}
-}
-
-// cleanupRoutine periodically cleans up old task records from memory
-func (o *Orchestrator) cleanupRoutine() {
-	defer o.wg.Done()
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-o.shutdown:
-			return
-		case <-ticker.C:
-			// Keep task results for timeout duration + 5 minutes buffer
-			// This ensures results are available even if client is slightly delayed
-			retentionMs := o.config.TimeoutMs + (5 * 60 * 1000) // timeout + 5 minutes
-			cutoff := time.Now().Add(-time.Duration(retentionMs) * time.Millisecond)
-
-			o.mu.Lock()
-			cleaned := 0
-			for taskID, status := range o.taskStatus {
-				// Remove completed/failed tasks older than retention period
-				if status.CompletedAt != nil && status.CompletedAt.Before(cutoff) {
-					delete(o.taskStatus, taskID)
-					delete(o.resultCache, taskID)
-					delete(o.responseChans, taskID)
-					cleaned++
-				}
-			}
-			o.mu.Unlock()
-
-			if cleaned > 0 {
-				log.Printf("Cleaned up %d old task records from memory", cleaned)
-			}
-		}
-	}
-}
 
 // Shutdown gracefully stops the orchestrator
 func (o *Orchestrator) Shutdown() {
@@ -1133,6 +1234,19 @@ func (o *Orchestrator) Shutdown() {
 
 	// Signal shutdown
 	close(o.shutdown)
+
+	// Cancel orchestrator context
+	if o.cancel != nil {
+		o.cancel()
+	}
+
+	// Stop event loop and blocking pool
+	if o.eventLoop != nil {
+		o.eventLoop.Stop()
+	}
+	if o.blockingPool != nil {
+		o.blockingPool.Stop()
+	}
 
 	// Close listener
 	if o.listener != nil {
