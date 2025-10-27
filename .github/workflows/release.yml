@@ -32,23 +32,23 @@ jobs:
           LDFLAGS="-s -w -X main.Version=${VERSION}"
           
           # Linux AMD64
-          GOOS=linux GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o parallite-linux-amd64 main.go
+          GOOS=linux GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o parallite-linux-amd64 .
           tar -czf parallite-${VERSION}-linux-amd64.tar.gz parallite-linux-amd64
           
           # Linux ARM64
-          GOOS=linux GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o parallite-linux-arm64 main.go
+          GOOS=linux GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o parallite-linux-arm64 .
           tar -czf parallite-${VERSION}-linux-arm64.tar.gz parallite-linux-arm64
           
           # macOS AMD64
-          GOOS=darwin GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o parallite-darwin-amd64 main.go
+          GOOS=darwin GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o parallite-darwin-amd64 .
           tar -czf parallite-${VERSION}-darwin-amd64.tar.gz parallite-darwin-amd64
           
           # macOS ARM64 (Apple Silicon)
-          GOOS=darwin GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o parallite-darwin-arm64 main.go
+          GOOS=darwin GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o parallite-darwin-arm64 .
           tar -czf parallite-${VERSION}-darwin-arm64.tar.gz parallite-darwin-arm64
           
           # Windows AMD64
-          GOOS=windows GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o parallite-windows-amd64.exe main.go
+          GOOS=windows GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o parallite-windows-amd64.exe .
           zip parallite-${VERSION}-windows-amd64.zip parallite-windows-amd64.exe
 
       - name: Create Release
